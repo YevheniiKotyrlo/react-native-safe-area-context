@@ -26,20 +26,47 @@ private fun getRootWindowInsetsCompatR(rootView: View): EdgeInsets? {
   )
 }
 
+@RequiresApi(Build.VERSION_CODES.P)
+private fun getDisplayCutoutInsetsCompatP(insets: WindowInsets): EdgeInsets {
+  val cutout =
+      insets.displayCutout ?: return EdgeInsets(top = 0f, right = 0f, bottom = 0f, left = 0f)
+  return EdgeInsets(
+      top = cutout.safeInsetTop.toFloat(),
+      right = cutout.safeInsetRight.toFloat(),
+      bottom = cutout.safeInsetBottom.toFloat(),
+      left = cutout.safeInsetLeft.toFloat(),
+  )
+}
+
+private fun getDisplayCutoutInsetsCompat(insets: WindowInsets): EdgeInsets {
+  return when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> getDisplayCutoutInsetsCompatP(insets)
+    else -> EdgeInsets(top = 0f, right = 0f, bottom = 0f, left = 0f)
+  }
+}
+
 @RequiresApi(Build.VERSION_CODES.M)
 @Suppress("DEPRECATION")
 private fun getRootWindowInsetsCompatM(rootView: View): EdgeInsets? {
   val insets = rootView.rootWindowInsets ?: return null
+  // Under SYSTEM_UI_FLAG_LAYOUT_STABLE a hidden bar keeps its system window inset, so a bar hidden
+  // through the system UI visibility leaves only the display cutout, as getInsets does from API 30.
+  val systemUiVisibility = rootView.windowSystemUiVisibility
+  val isStatusBarHidden = (systemUiVisibility and View.SYSTEM_UI_FLAG_FULLSCREEN) != 0
+  val isNavigationBarHidden = (systemUiVisibility and View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) != 0
+  val cutout = getDisplayCutoutInsetsCompat(insets)
   return EdgeInsets(
-      top = insets.systemWindowInsetTop.toFloat(),
-      right = insets.systemWindowInsetRight.toFloat(),
+      top = if (isStatusBarHidden) cutout.top else insets.systemWindowInsetTop.toFloat(),
+      right = if (isNavigationBarHidden) cutout.right else insets.systemWindowInsetRight.toFloat(),
       // System insets are more reliable to account for notches but the
       // system inset for bottom includes the soft keyboard which we don't
       // want to be consistent with iOS. Using the min value makes sure we
       // never get the keyboard offset while still working with devices that
       // hide the navigation bar.
-      bottom = min(insets.systemWindowInsetBottom, insets.stableInsetBottom).toFloat(),
-      left = insets.systemWindowInsetLeft.toFloat(),
+      bottom =
+          if (isNavigationBarHidden) cutout.bottom
+          else min(insets.systemWindowInsetBottom, insets.stableInsetBottom).toFloat(),
+      left = if (isNavigationBarHidden) cutout.left else insets.systemWindowInsetLeft.toFloat(),
   )
 }
 
