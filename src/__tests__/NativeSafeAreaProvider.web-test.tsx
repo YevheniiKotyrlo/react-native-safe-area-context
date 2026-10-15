@@ -43,13 +43,29 @@ const WINDOW_INSETS = { top: 44, bottom: 34, left: 10, right: 20 };
 class ResizeObserverMock {
   static instances: ResizeObserverMock[] = [];
   callback: () => void;
+  observed: { target: Element; options?: ResizeObserverOptions }[] = [];
   constructor(callback: () => void) {
     this.callback = callback;
     ResizeObserverMock.instances.push(this);
   }
-  observe() {}
+  observe(target: Element, options?: ResizeObserverOptions) {
+    this.observed.push({ target, options });
+  }
   unobserve() {}
   disconnect() {}
+}
+
+function spansViewport(element: Element): boolean {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+  const { position, top, right, bottom, left } = element.style;
+  return (
+    position === 'fixed' &&
+    [top, right, bottom, left].every(
+      (inset) => inset === '0' || inset === '0px',
+    )
+  );
 }
 
 function triggerResizeObservers() {
@@ -228,16 +244,39 @@ describe('NativeSafeAreaProvider.web', () => {
     });
   });
 
-  it('updates metrics on window resize', () => {
+  it('does not measure inside a window resize event', () => {
     rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
     const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
     mountProvider(onInsetsChange);
-    // The window grows and the provider element grows with it.
+    const callCount = onInsetsChange.mock.calls.length;
+    rectMock.mockClear();
     setWindowDimensions(1280, 800);
     rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
+    // The resize event fires before the frame's layout, so reading the
+    // element's rect here would force a synchronous layout.
     act(() => {
       window.dispatchEvent(new Event('resize'));
     });
+    expect(rectMock).not.toHaveBeenCalled();
+    expect(onInsetsChange).toHaveBeenCalledTimes(callCount);
+  });
+
+  it('observes an element spanning the viewport, so a window resize is measured after layout', () => {
+    rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+    const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
+    mountProvider(onInsetsChange);
+    const viewportObservations = ResizeObserverMock.instances.flatMap(
+      (instance) =>
+        instance.observed.filter(({ target }) => spansViewport(target)),
+    );
+    expect(viewportObservations).toHaveLength(1);
+    expect(viewportObservations[0]?.options).toEqual({ box: 'border-box' });
+
+    // The window grows and the provider element grows with it; the
+    // observer reports it once layout has run.
+    setWindowDimensions(1280, 800);
+    rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
+    triggerResizeObservers();
     expect(lastMetrics(onInsetsChange)).toEqual({
       insets: WINDOW_INSETS,
       frame: { x: 0, y: 0, width: 1280, height: 800 },

@@ -98,7 +98,6 @@ export function NativeSafeAreaProvider({
       onInsetsChange({ nativeEvent: { insets, frame } });
     };
     element.addEventListener(getSupportedTransitionEvent(), onEnd);
-    window.addEventListener('resize', onEnd);
     onEnd();
 
     let resizeObserver: ResizeObserver | null = null;
@@ -111,6 +110,10 @@ export function NativeSafeAreaProvider({
       // per-frame measurement work.
       resizeObserver = new ResizeObserver(onEnd);
       resizeObserver.observe(providerElement);
+      // A window resize resizes the context element, which spans the viewport.
+      resizeObserver.observe(element, { box: 'border-box' });
+    } else {
+      window.addEventListener('resize', onEnd);
     }
 
     return () => {
@@ -175,8 +178,8 @@ function createContextElement(): HTMLElement {
   style.position = 'fixed';
   style.left = '0';
   style.top = '0';
-  style.width = '0';
-  style.height = '0';
+  style.right = '0';
+  style.bottom = '0';
   style.zIndex = '-1';
   style.overflow = 'hidden';
   style.visibility = 'hidden';
