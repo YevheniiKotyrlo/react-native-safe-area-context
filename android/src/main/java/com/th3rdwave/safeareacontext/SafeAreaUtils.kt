@@ -1,5 +1,8 @@
 package com.th3rdwave.safeareacontext
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Build
 import android.view.View
 import android.view.ViewGroup
@@ -45,15 +48,35 @@ private fun getDisplayCutoutInsetsCompat(insets: WindowInsets): EdgeInsets {
   }
 }
 
+private fun isInMultiWindowMode(context: Context?): Boolean {
+  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+    return false
+  }
+  var current = context
+  while (current is ContextWrapper) {
+    if (current is Activity) {
+      return current.isInMultiWindowMode
+    }
+    current = current.baseContext
+  }
+  return false
+}
+
 @RequiresApi(Build.VERSION_CODES.M)
 @Suppress("DEPRECATION")
-private fun getRootWindowInsetsCompatM(rootView: View): EdgeInsets? {
+private fun getRootWindowInsetsCompatM(rootView: View, activityContext: Context?): EdgeInsets? {
   val insets = rootView.rootWindowInsets ?: return null
   // Under SYSTEM_UI_FLAG_LAYOUT_STABLE a hidden bar keeps its system window inset, so a bar hidden
   // through the system UI visibility leaves only the display cutout, as getInsets does from API 30.
   val systemUiVisibility = rootView.windowSystemUiVisibility
-  val isStatusBarHidden = (systemUiVisibility and View.SYSTEM_UI_FLAG_FULLSCREEN) != 0
-  val isNavigationBarHidden = (systemUiVisibility and View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) != 0
+  val hidesStatusBar = (systemUiVisibility and View.SYSTEM_UI_FLAG_FULLSCREEN) != 0
+  val hidesNavigationBar = (systemUiVisibility and View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) != 0
+  // In multi-window mode the system shows the bars whatever the app requested. Asking is a binder
+  // call, so only an app hiding a bar asks.
+  val showsBarsAnyway =
+      (hidesStatusBar || hidesNavigationBar) && isInMultiWindowMode(activityContext)
+  val isStatusBarHidden = hidesStatusBar && !showsBarsAnyway
+  val isNavigationBarHidden = hidesNavigationBar && !showsBarsAnyway
   val cutout = getDisplayCutoutInsetsCompat(insets)
   return EdgeInsets(
       top = if (isStatusBarHidden) cutout.top else insets.systemWindowInsetTop.toFloat(),
@@ -81,21 +104,28 @@ private fun getRootWindowInsetsCompatBase(rootView: View): EdgeInsets? {
   )
 }
 
-private fun getRootWindowInsetsCompat(rootView: View): EdgeInsets? {
+private fun getRootWindowInsetsCompat(rootView: View, activityContext: Context?): EdgeInsets? {
   return when {
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> getRootWindowInsetsCompatR(rootView)
-    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> getRootWindowInsetsCompatM(rootView)
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ->
+        getRootWindowInsetsCompatM(rootView, activityContext)
     else -> getRootWindowInsetsCompatBase(rootView)
   }
 }
 
-fun getSafeAreaInsets(view: View): EdgeInsets? {
+fun getSafeAreaInsets(view: View): EdgeInsets? = getSafeAreaInsets(view, view.context)
+
+/**
+ * [activityContext] leads to the activity whose window holds [view], which a decor view's own
+ * context does not.
+ */
+fun getSafeAreaInsets(view: View, activityContext: Context?): EdgeInsets? {
   // The view has not been layout yet.
   if (view.height == 0) {
     return null
   }
   val rootView = view.rootView
-  val windowInsets = getRootWindowInsetsCompat(rootView) ?: return null
+  val windowInsets = getRootWindowInsetsCompat(rootView, activityContext) ?: return null
 
   // Calculate the part of the view that overlaps with window insets.
   val windowWidth = rootView.width.toFloat()

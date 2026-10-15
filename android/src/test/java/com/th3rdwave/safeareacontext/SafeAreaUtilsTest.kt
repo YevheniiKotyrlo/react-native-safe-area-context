@@ -1,5 +1,9 @@
 package com.th3rdwave.safeareacontext
 
+import android.app.Activity
+import android.app.Application
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Insets
 import android.view.DisplayCutout
 import android.view.View
@@ -11,6 +15,8 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.verify
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
@@ -61,7 +67,55 @@ class SafeAreaUtilsTest {
     )
   }
 
-  private fun viewFillingScreen(systemUiVisibility: Int, cutoutTop: Float = 0f): View {
+  @Test
+  fun barsTheSystemShowsInMultiWindowModeKeepTheirInsets() {
+    val view =
+        viewFillingScreen(
+            systemUiVisibility = EDGE_TO_EDGE or HIDDEN_STATUS_BAR or HIDDEN_NAVIGATION_BAR,
+            viewContext = activityContext(isInMultiWindowMode = true),
+        )
+
+    assertEquals(
+        EdgeInsets(top = STATUS_BAR, right = 0f, bottom = NAVIGATION_BAR, left = 0f),
+        getSafeAreaInsets(view),
+    )
+  }
+
+  @Test
+  fun aDecorViewTakesMultiWindowModeFromTheActivityItIsGiven() {
+    val decorView =
+        viewFillingScreen(
+            systemUiVisibility = EDGE_TO_EDGE or HIDDEN_STATUS_BAR or HIDDEN_NAVIGATION_BAR,
+            viewContext = ContextWrapper(mock<Application>()),
+        )
+
+    assertEquals(
+        EdgeInsets(top = STATUS_BAR, right = 0f, bottom = NAVIGATION_BAR, left = 0f),
+        getSafeAreaInsets(decorView, activityContext(isInMultiWindowMode = true)),
+    )
+  }
+
+  @Test
+  fun anAppHidingNoBarNeverAsksWhetherItIsInMultiWindowMode() {
+    val activity = mock<Activity>()
+    val view =
+        viewFillingScreen(systemUiVisibility = EDGE_TO_EDGE, viewContext = ContextWrapper(activity))
+
+    getSafeAreaInsets(view)
+
+    verify(activity, never()).isInMultiWindowMode
+  }
+
+  private fun activityContext(isInMultiWindowMode: Boolean): Context =
+      ContextWrapper(
+          mock<Activity> { on { this.isInMultiWindowMode } doReturn isInMultiWindowMode }
+      )
+
+  private fun viewFillingScreen(
+      systemUiVisibility: Int,
+      cutoutTop: Float = 0f,
+      viewContext: Context = activityContext(isInMultiWindowMode = false),
+  ): View {
     val cutout =
         if (cutoutTop > 0f) {
           DisplayCutout(
@@ -89,6 +143,7 @@ class SafeAreaUtilsTest {
           on { height } doReturn SCREEN_HEIGHT
         }
     return mock {
+      on { context } doReturn viewContext
       on { this.rootView } doReturn rootView
       on { width } doReturn SCREEN_WIDTH
       on { height } doReturn SCREEN_HEIGHT
