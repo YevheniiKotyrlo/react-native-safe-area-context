@@ -55,6 +55,12 @@ class ResizeObserverMock {
   disconnect() {}
 }
 
+class ResizeObserverEntryMock {
+  get borderBoxSize(): readonly ResizeObserverSize[] {
+    return [];
+  }
+}
+
 function spansViewport(element: Element): boolean {
   if (!(element instanceof HTMLElement)) {
     return false;
@@ -155,6 +161,8 @@ describe('NativeSafeAreaProvider.web', () => {
     ResizeObserverMock.instances = [];
     (globalThis as { ResizeObserver?: unknown }).ResizeObserver =
       ResizeObserverMock;
+    (globalThis as { ResizeObserverEntry?: unknown }).ResizeObserverEntry =
+      ResizeObserverEntryMock;
     setWindowDimensions(WINDOW_WIDTH, WINDOW_HEIGHT);
     mockWindowInsets(WINDOW_INSETS);
     rectMock = spyOnBoundingClientRect().mockReturnValue(
@@ -173,6 +181,8 @@ describe('NativeSafeAreaProvider.web', () => {
     host?.remove();
     host = null;
     delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    delete (globalThis as { ResizeObserverEntry?: unknown })
+      .ResizeObserverEntry;
     jest.restoreAllMocks();
   });
 
@@ -277,6 +287,32 @@ describe('NativeSafeAreaProvider.web', () => {
     setWindowDimensions(1280, 800);
     rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
     triggerResizeObservers();
+    expect(lastMetrics(onInsetsChange)).toEqual({
+      insets: WINDOW_INSETS,
+      frame: { x: 0, y: 0, width: 1280, height: 800 },
+    });
+  });
+
+  it('measures a window resize from the resize event where ResizeObserver cannot observe a border box', () => {
+    // An engine that ignores the `box` option would observe the context
+    // element's content box, which every step of its env() padding
+    // transition resizes.
+    (globalThis as { ResizeObserverEntry?: unknown }).ResizeObserverEntry =
+      class {};
+    rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+    const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
+    mountProvider(onInsetsChange);
+    const viewportObservations = ResizeObserverMock.instances.flatMap(
+      (instance) =>
+        instance.observed.filter(({ target }) => spansViewport(target)),
+    );
+    expect(viewportObservations).toHaveLength(0);
+
+    setWindowDimensions(1280, 800);
+    rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
     expect(lastMetrics(onInsetsChange)).toEqual({
       insets: WINDOW_INSETS,
       frame: { x: 0, y: 0, width: 1280, height: 800 },

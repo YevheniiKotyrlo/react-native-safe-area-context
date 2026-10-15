@@ -110,6 +110,8 @@ export function NativeSafeAreaProvider({
       // per-frame measurement work.
       resizeObserver = new ResizeObserver(onEnd);
       resizeObserver.observe(providerElement);
+    }
+    if (resizeObserver != null && canObserveBorderBox()) {
       // A window resize resizes the context element, which spans the viewport.
       resizeObserver.observe(element, { box: 'border-box' });
     } else {
@@ -128,6 +130,15 @@ export function NativeSafeAreaProvider({
     <View ref={setRef} style={style}>
       {children}
     </View>
+  );
+}
+
+// An engine that ignores the `box` option observes the content box, which the
+// env() padding transition resizes; the same engines lack `borderBoxSize`.
+function canObserveBorderBox(): boolean {
+  return (
+    typeof ResizeObserverEntry !== 'undefined' &&
+    'borderBoxSize' in ResizeObserverEntry.prototype
   );
 }
 
