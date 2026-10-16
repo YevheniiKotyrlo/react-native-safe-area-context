@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { View } from 'react-native';
-import type { NativeSafeAreaProviderProps } from './SafeArea.types';
+import type { Metrics, NativeSafeAreaProviderProps } from './SafeArea.types';
 
 const CSSTransitions: Record<string, string> = {
   WebkitTransition: 'webkitTransitionEnd',
@@ -50,6 +50,7 @@ export function NativeSafeAreaProvider({
 
     const element = createContextElement();
     document.body.appendChild(element);
+    let reportedMetrics: Metrics | null = null;
     const onEnd = () => {
       const { paddingTop, paddingBottom, paddingLeft, paddingRight } =
         window.getComputedStyle(element);
@@ -94,10 +95,19 @@ export function NativeSafeAreaProvider({
         };
       }
 
+      // Like the native providers, report only metrics that changed.
+      if (
+        reportedMetrics != null &&
+        areMetricsEqual(reportedMetrics, { insets, frame })
+      ) {
+        return;
+      }
+      reportedMetrics = { insets, frame };
       // @ts-ignore: missing properties
       onInsetsChange({ nativeEvent: { insets, frame } });
     };
     element.addEventListener(getSupportedTransitionEvent(), onEnd);
+    const stopMeasuringOnWindowResize = measureOnWindowResize(onEnd);
     onEnd();
 
     let resizeObserver: ResizeObserver | null = null;
@@ -111,16 +121,10 @@ export function NativeSafeAreaProvider({
       resizeObserver = new ResizeObserver(onEnd);
       resizeObserver.observe(providerElement);
     }
-    if (resizeObserver != null && canObserveBorderBox()) {
-      // A window resize resizes the context element, which spans the viewport.
-      resizeObserver.observe(element, { box: 'border-box' });
-    } else {
-      window.addEventListener('resize', onEnd);
-    }
 
     return () => {
       element.removeEventListener(getSupportedTransitionEvent(), onEnd);
-      window.removeEventListener('resize', onEnd);
+      stopMeasuringOnWindowResize();
       resizeObserver?.disconnect();
       element.remove();
     };
@@ -133,13 +137,38 @@ export function NativeSafeAreaProvider({
   );
 }
 
-// An engine that ignores the `box` option observes the content box, which the
-// env() padding transition resizes; the same engines lack `borderBoxSize`.
-function canObserveBorderBox(): boolean {
+function areMetricsEqual(reported: Metrics, measured: Metrics): boolean {
   return (
-    typeof ResizeObserverEntry !== 'undefined' &&
-    'borderBoxSize' in ResizeObserverEntry.prototype
+    reported.insets.top === measured.insets.top &&
+    reported.insets.right === measured.insets.right &&
+    reported.insets.bottom === measured.insets.bottom &&
+    reported.insets.left === measured.insets.left &&
+    reported.frame.x === measured.frame.x &&
+    reported.frame.y === measured.frame.y &&
+    reported.frame.width === measured.frame.width &&
+    reported.frame.height === measured.frame.height
   );
+}
+
+// React commits the updates of each event listener separately, so a single
+// listener measures every provider and a window resize commits once.
+const windowResizeMeasurements = new Set<() => void>();
+
+function measureEveryProvider() {
+  windowResizeMeasurements.forEach((measure) => measure());
+}
+
+function measureOnWindowResize(measure: () => void): () => void {
+  if (windowResizeMeasurements.size === 0) {
+    window.addEventListener('resize', measureEveryProvider);
+  }
+  windowResizeMeasurements.add(measure);
+  return () => {
+    windowResizeMeasurements.delete(measure);
+    if (windowResizeMeasurements.size === 0) {
+      window.removeEventListener('resize', measureEveryProvider);
+    }
+  };
 }
 
 let _supportedTransitionEvent: string | null | undefined = null;
@@ -189,8 +218,8 @@ function createContextElement(): HTMLElement {
   style.position = 'fixed';
   style.left = '0';
   style.top = '0';
-  style.right = '0';
-  style.bottom = '0';
+  style.width = '0';
+  style.height = '0';
   style.zIndex = '-1';
   style.overflow = 'hidden';
   style.visibility = 'hidden';

@@ -43,35 +43,13 @@ const WINDOW_INSETS = { top: 44, bottom: 34, left: 10, right: 20 };
 class ResizeObserverMock {
   static instances: ResizeObserverMock[] = [];
   callback: () => void;
-  observed: { target: Element; options?: ResizeObserverOptions }[] = [];
   constructor(callback: () => void) {
     this.callback = callback;
     ResizeObserverMock.instances.push(this);
   }
-  observe(target: Element, options?: ResizeObserverOptions) {
-    this.observed.push({ target, options });
-  }
+  observe() {}
   unobserve() {}
   disconnect() {}
-}
-
-class ResizeObserverEntryMock {
-  get borderBoxSize(): readonly ResizeObserverSize[] {
-    return [];
-  }
-}
-
-function spansViewport(element: Element): boolean {
-  if (!(element instanceof HTMLElement)) {
-    return false;
-  }
-  const { position, top, right, bottom, left } = element.style;
-  return (
-    position === 'fixed' &&
-    [top, right, bottom, left].every(
-      (inset) => inset === '0' || inset === '0px',
-    )
-  );
 }
 
 function triggerResizeObservers() {
@@ -145,15 +123,19 @@ let root: Root | null = null;
 let host: HTMLElement | null = null;
 let rectMock: ReturnType<typeof spyOnBoundingClientRect>;
 
-function mountProvider(onInsetsChange: InsetChangeNativeCallback) {
+function mount(element: React.ReactElement) {
   const newHost = document.createElement('div');
   document.body.appendChild(newHost);
   const newRoot = createRoot(newHost);
   act(() => {
-    newRoot.render(<NativeSafeAreaProvider onInsetsChange={onInsetsChange} />);
+    newRoot.render(element);
   });
   root = newRoot;
   host = newHost;
+}
+
+function mountProvider(onInsetsChange: InsetChangeNativeCallback) {
+  mount(<NativeSafeAreaProvider onInsetsChange={onInsetsChange} />);
 }
 
 describe('NativeSafeAreaProvider.web', () => {
@@ -161,8 +143,6 @@ describe('NativeSafeAreaProvider.web', () => {
     ResizeObserverMock.instances = [];
     (globalThis as { ResizeObserver?: unknown }).ResizeObserver =
       ResizeObserverMock;
-    (globalThis as { ResizeObserverEntry?: unknown }).ResizeObserverEntry =
-      ResizeObserverEntryMock;
     setWindowDimensions(WINDOW_WIDTH, WINDOW_HEIGHT);
     mockWindowInsets(WINDOW_INSETS);
     rectMock = spyOnBoundingClientRect().mockReturnValue(
@@ -181,8 +161,6 @@ describe('NativeSafeAreaProvider.web', () => {
     host?.remove();
     host = null;
     delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
-    delete (globalThis as { ResizeObserverEntry?: unknown })
-      .ResizeObserverEntry;
     jest.restoreAllMocks();
   });
 
@@ -254,69 +232,106 @@ describe('NativeSafeAreaProvider.web', () => {
     });
   });
 
-  it('does not measure inside a window resize event', () => {
+  it('updates metrics on window resize', () => {
+    rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+    const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
+    mountProvider(onInsetsChange);
+    // The window grows and the provider element grows with it.
+    setWindowDimensions(1280, 800);
+    rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(lastMetrics(onInsetsChange)).toEqual({
+      insets: WINDOW_INSETS,
+      frame: { x: 0, y: 0, width: 1280, height: 800 },
+    });
+  });
+
+  it('measures a window resize that moves the provider without resizing it', () => {
+    setWindowDimensions(1280, WINDOW_HEIGHT);
+    rectMock.mockReturnValue(makeRect(340, 0, 600, WINDOW_HEIGHT));
+    const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
+    mountProvider(onInsetsChange);
+    // A centered provider moves as the window narrows, and no element it
+    // observes changes size.
+    setWindowDimensions(900, WINDOW_HEIGHT);
+    rectMock.mockReturnValue(makeRect(150, 0, 600, WINDOW_HEIGHT));
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(lastMetrics(onInsetsChange).frame).toEqual({
+      x: 150,
+      y: 0,
+      width: 600,
+      height: WINDOW_HEIGHT,
+    });
+  });
+
+  it('reports a window resize that changes the insets and leaves the frame as it was', () => {
+    rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
+    const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
+    mountProvider(onInsetsChange);
+    mockWindowInsets({ top: 0, bottom: 21, left: 44, right: 44 });
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(lastMetrics(onInsetsChange)).toEqual({
+      insets: { top: 0, bottom: 21, left: 44, right: 44 },
+      frame: { x: 0, y: 0, width: WINDOW_WIDTH, height: WINDOW_HEIGHT },
+    });
+  });
+
+  it('does not report metrics that did not change', () => {
     rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
     const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
     mountProvider(onInsetsChange);
     const callCount = onInsetsChange.mock.calls.length;
-    rectMock.mockClear();
-    setWindowDimensions(1280, 800);
-    rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
-    // The resize event fires before the frame's layout, so reading the
-    // element's rect here would force a synchronous layout.
+    triggerResizeObservers();
     act(() => {
       window.dispatchEvent(new Event('resize'));
     });
-    expect(rectMock).not.toHaveBeenCalled();
     expect(onInsetsChange).toHaveBeenCalledTimes(callCount);
   });
 
-  it('observes an element spanning the viewport, so a window resize is measured after layout', () => {
-    rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
-    const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
-    mountProvider(onInsetsChange);
-    const viewportObservations = ResizeObserverMock.instances.flatMap(
-      (instance) =>
-        instance.observed.filter(({ target }) => spansViewport(target)),
+  it('measures nested providers from one window resize listener', () => {
+    const addEventListenerSpy = jest.spyOn(window, 'addEventListener');
+    const removeEventListenerSpy = jest.spyOn(window, 'removeEventListener');
+    const outerInsetsChange = jest.fn<InsetChangeNativeCallback>();
+    const innerInsetsChange = jest.fn<InsetChangeNativeCallback>();
+    mount(
+      <NativeSafeAreaProvider onInsetsChange={outerInsetsChange}>
+        <NativeSafeAreaProvider onInsetsChange={innerInsetsChange} />
+      </NativeSafeAreaProvider>,
     );
-    expect(viewportObservations).toHaveLength(1);
-    expect(viewportObservations[0]?.options).toEqual({ box: 'border-box' });
-
-    // The window grows and the provider element grows with it; the
-    // observer reports it once layout has run.
-    setWindowDimensions(1280, 800);
-    rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
-    triggerResizeObservers();
-    expect(lastMetrics(onInsetsChange)).toEqual({
-      insets: WINDOW_INSETS,
-      frame: { x: 0, y: 0, width: 1280, height: 800 },
-    });
-  });
-
-  it('measures a window resize from the resize event where ResizeObserver cannot observe a border box', () => {
-    // An engine that ignores the `box` option would observe the context
-    // element's content box, which every step of its env() padding
-    // transition resizes.
-    (globalThis as { ResizeObserverEntry?: unknown }).ResizeObserverEntry =
-      class {};
-    rectMock.mockReturnValue(makeRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
-    const onInsetsChange = jest.fn<InsetChangeNativeCallback>();
-    mountProvider(onInsetsChange);
-    const viewportObservations = ResizeObserverMock.instances.flatMap(
-      (instance) =>
-        instance.observed.filter(({ target }) => spansViewport(target)),
-    );
-    expect(viewportObservations).toHaveLength(0);
+    const resizeListeners = addEventListenerSpy.mock.calls
+      .filter(([type]) => type === 'resize')
+      .map(([, listener]) => listener);
+    expect(resizeListeners).toHaveLength(1);
 
     setWindowDimensions(1280, 800);
     rectMock.mockReturnValue(makeRect(0, 0, 1280, 800));
     act(() => {
       window.dispatchEvent(new Event('resize'));
     });
-    expect(lastMetrics(onInsetsChange)).toEqual({
-      insets: WINDOW_INSETS,
-      frame: { x: 0, y: 0, width: 1280, height: 800 },
+    for (const onInsetsChange of [outerInsetsChange, innerInsetsChange]) {
+      expect(lastMetrics(onInsetsChange).frame).toEqual({
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 800,
+      });
+    }
+
+    const currentRoot = root;
+    act(() => {
+      currentRoot?.unmount();
     });
+    root = null;
+    expect(removeEventListenerSpy).toHaveBeenCalledWith(
+      'resize',
+      resizeListeners[0],
+    );
   });
 
   it('does not update metrics on a position-only change (known limitation)', () => {
